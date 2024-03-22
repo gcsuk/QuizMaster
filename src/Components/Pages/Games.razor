@@ -1,0 +1,141 @@
+﻿@page "/games"
+@using Azure.Data.Tables
+@using Microsoft.Extensions.Configuration
+@rendermode InteractiveServer
+@inject NavigationManager NavManager
+@inject IConfiguration Configuration
+
+@if (!string.IsNullOrEmpty(_validationMessage))
+{
+    <div class="alert alert-danger">@_validationMessage</div>
+}
+
+<div class="section-title">
+    <h2>Games</h2>
+    <button class="btn btn-primary" @onclick="CreateGame">Create Game</button>
+</div>
+
+@if (_games.Any())
+{
+    <div class="grid">
+        @foreach (var game in _games)
+        {
+            <h4>Game @game.Id</h4>
+            <label>Start Date</label>
+            <InputDate class="form-control" @bind-Value="game.StartDate" />
+            <label>Status</label>
+            <InputSelect @bind-Value="game.Status" class="form-select" disabled>
+                <option value="0">Not Started</option>
+                <option value="1">In Progress</option>
+                <option value="2">Finished</option>
+            </InputSelect>
+            <div class="game-actions">
+                <button class="btn btn-success" @onclick="() => StartGame(game.Id)">@(GetActionButtonText(game))</button>
+                <button class="btn btn-primary" @onclick="() => UpdateGame(game)">Update</button>
+                <button class="btn btn-danger" @onclick="() => DeleteGame(game.Id)">Delete</button>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <p>No games found.</p>
+}
+
+@code {
+    private TableClient _gamesTableClient = null!;
+    private readonly List<GameModel> _games = [];
+    private string _validationMessage = "";
+
+    protected override void OnInitialized()
+    {
+        _gamesTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Games");
+
+        var gameEntities = _gamesTableClient.Query<GameEntity>().ToList();
+
+        foreach (var entity in gameEntities)
+            _games.Add(new GameModel
+            {
+                Id = Convert.ToInt32(entity.RowKey),
+                StartDate = entity.StartDate,
+                Status = entity.Status
+            });
+    }
+
+    private async Task CreateGame()
+    {
+        var newGameId = _games.Any() ? _games.Max(q => q.Id) + 1 : 1;
+
+        var game = new GameEntity
+            {
+                RowKey = newGameId.ToString(),
+                CurrentQuestion  = 1
+            };
+
+        await _gamesTableClient.UpsertEntityAsync(game, TableUpdateMode.Replace);
+
+        _games.Add(new GameModel { Id = newGameId });
+    }
+
+    private async Task StartGame(int id)
+    {
+        var game = await _gamesTableClient.GetEntityAsync<GameEntity>("1", id.ToString());
+
+        if (game.Value.Status == 0)
+        {
+            game.Value.StartDate = new DateTime(DateTime.Now.Ticks, DateTimeKind.Utc);
+            game.Value.Status = 1;
+
+            await _gamesTableClient.UpsertEntityAsync(game.Value, TableUpdateMode.Replace);
+        }
+
+        NavManager.NavigateTo(game.Value.Status == 2 ? $"/results/{id}" : $"/run/{id}");
+    }
+
+    private async Task UpdateGame(GameModel game)
+    {
+        if (!game.StartDate.HasValue)
+        {
+            _validationMessage = "Start Date is required.";
+            return;
+        }
+
+        var gameEntity = await _gamesTableClient.GetEntityAsync<GameEntity>("1", game.Id.ToString());
+
+        gameEntity.Value.StartDate = new DateTime(game.StartDate.Value.Ticks, DateTimeKind.Utc);
+        gameEntity.Value.Status = game.Status;
+
+        await _gamesTableClient.UpsertEntityAsync(gameEntity.Value, TableUpdateMode.Replace);
+
+        _validationMessage = "";
+    }
+
+    private async Task DeleteGame(int id)
+    {
+        var scoresTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Scores");
+        var gameScoreEntities = scoresTableClient.Query<ScoreEntity>().Where(s => s.PartitionKey == id.ToString()).ToList();
+
+        foreach (var entity in gameScoreEntities)
+            await scoresTableClient.DeleteEntityAsync(entity.PartitionKey, entity.RowKey);
+
+        await _gamesTableClient.DeleteEntityAsync("1", id.ToString());
+        _games.Remove(_games.Single(p => p.Id == id));
+    }
+
+    private static string GetActionButtonText(GameModel game)
+    {
+        return game.Status switch
+        {
+            0 => "Start",
+            1 => "Resume",
+            _ => "Results" // 2
+        };
+    }
+
+    public record GameModel 
+    {
+        public int Id { get; set; }
+        public DateTime? StartDate { get; set; }
+        public int Status { get; set; }
+    }
+}

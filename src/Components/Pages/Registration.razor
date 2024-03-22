@@ -1,0 +1,82 @@
+﻿@page "/registration"
+@using Azure
+@using Azure.Data.Tables
+@using Microsoft.Extensions.Configuration
+@rendermode InteractiveServer
+@inject IConfiguration Configuration
+
+<PageTitle>Players</PageTitle>
+
+<h1>Player Registration</h1>
+
+<h2 class="mt-3">Add New Player</h2>
+
+<div class="mt-3">
+    <label for="name" class="form-label">Name:</label>
+    <input id="name" class="form-control" type="text" @bind="_newPlayerName" />
+    <label for="pin" class="form-label">PIN:</label>
+    <input id="pin" class="form-control" type="password" maxlength="4" @bind="_newPlayerPin" />
+    <button class="btn btn-primary mt-3 mb-3" @onclick="Add">Add</button>
+</div>
+
+<h2>Current Players</h2>
+
+@if (_players != null && _players.Any())
+{
+    <div class="grid">
+        @foreach (var player in _players)
+        {
+            <button class="btn btn-danger" @onclick="() => Delete(player.Number)">X</button>
+            <label for="name">@player.Name</label>
+        }
+    </div>
+}
+else
+{
+    <p>No players found.</p>
+}
+
+@code {
+    private TableClient _tableClient = null!;
+    private List<PlayerModel> _players = null!;
+    private string? _newPlayerName;
+    private int? _newPlayerPin;
+
+    protected override void OnInitialized()
+    {
+        _tableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Players");
+
+        var playerEntities = _tableClient.Query<PlayerEntity>().ToList();
+
+        _players = playerEntities.Select(p => new PlayerModel
+            {
+                Number = Convert.ToInt32(p.RowKey),
+                Name = p.Name,
+                Pin = p.Pin
+            }).ToList();
+    }
+
+    private async Task Add()
+    {
+        if (_newPlayerPin is null || _newPlayerName is null)
+            return;
+
+        var newId = _players.Any() ? Convert.ToInt32(_players.Last().Number) + 1 : 1;
+        var entity = new PlayerEntity("1", newId.ToString()) { Name = _newPlayerName, Pin = _newPlayerPin.Value };
+        await _tableClient.AddEntityAsync(entity);
+        _players.Add(new PlayerModel { Number = newId, Name = _newPlayerName, Pin = _newPlayerPin.Value });
+    }
+
+    private async Task Delete(int id)
+    {
+        await _tableClient.DeleteEntityAsync("1", id.ToString());
+        _players.Remove(_players.Single(p => p.Number == id));
+    }
+
+    private record PlayerModel
+    {
+        public required int Number { get; set; }
+        public required string Name { get; set; }
+        public required int Pin { get; set; }
+    }
+}

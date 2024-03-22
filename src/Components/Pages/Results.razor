@@ -1,0 +1,92 @@
+﻿@page "/results/{id}"
+@using Azure.Data.Tables
+@inject IConfiguration Configuration
+
+<h1>Results</h1>
+
+<div class="grid">
+    <p>Position</p>
+    <p>Player</p> 
+    <p>Score</p>
+</div>
+
+@foreach (var result in _results)
+{
+    var position = _results.FindIndex(r => result.PlayerName == r.PlayerName) + 1;
+
+    <div class="grid @GetPositionColor(position)">
+        <div>@AddOrdinalSuffix(position)</div>
+        <div>@result.PlayerName</div> 
+        <div>@result.Score</div>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public required string Id { get; set; }
+
+    private TableClient _playersTableClient = null!;
+    private TableClient _scoresTableClient = null!;
+
+    private List<ResultsModel> _results = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _playersTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Players");
+        _scoresTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Scores");
+
+        var players = _playersTableClient.Query<PlayerEntity>().ToList();
+
+        foreach (var player in players)
+        {
+            var score = await _scoresTableClient.GetEntityIfExistsAsync<ScoreEntity>(Id, player.RowKey);
+
+            _results.Add(new ResultsModel
+            {
+                PlayerName = player.Name,
+                Score = score.HasValue ? score.Value!.Score : 0
+            });
+        }
+
+        _results = _results.OrderByDescending(r => r.Score).ToList();
+    }
+
+    private static string GetPositionColor(int position) =>
+        position switch
+        {
+            1 => "gold",
+            2 => "silver",
+            3 => "bronze",
+            _ => "white"
+        };
+
+    private static string AddOrdinalSuffix(int number)
+    {
+        if (number <= 0)
+        {
+            return number.ToString();
+        }
+
+        switch (number % 100)
+        {
+            case 11:
+            case 12:
+            case 13:
+                return number + "th";
+        }
+
+        return (number % 10) switch
+        {
+            1 => number + "st",
+            2 => number + "nd",
+            3 => number + "rd",
+            _ => number + "th"
+        };
+    }
+
+    private record ResultsModel
+    {
+        public string PlayerName { get; set; }
+        public int Score { get; set; }
+    }
+}

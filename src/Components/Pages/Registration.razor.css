@@ -1,0 +1,10 @@
+﻿.grid {
+    display: grid;
+    grid-template-columns: 50px 1fr;
+    grid-gap: 1rem;
+    align-items: center;
+}
+
+[for=pin] {
+    margin-top: 10px;
+}

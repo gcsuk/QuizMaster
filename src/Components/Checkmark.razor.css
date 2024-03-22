@@ -1,0 +1,26 @@
+﻿.checkmark {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 2px solid green;
+    position: relative;
+}
+
+    .checkmark::before {
+        content: '';
+        position: absolute;
+        top: -25%;
+        transform: translate(-50%, -50%);
+        width: 10px;
+        height: 20px;
+        border: solid green;
+        border-width: 0 2px 2px 0;
+        transform-origin: bottom left;
+        transform: rotate(45deg);
+        opacity: 0;
+    }
+
+    .checkmark.checked::before,
+    .checkmark.checked::after {
+        opacity: 1;
+    }

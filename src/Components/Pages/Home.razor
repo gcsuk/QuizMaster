@@ -1,0 +1,84 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using Azure.Data.Tables
+@inject IConfiguration Configuration
+@inject NavigationManager NavigationManager
+
+@if (_players is not null && _players.Any())
+{
+    if (_signedInPlayer is null)
+    {
+        <h1>Who is playing?</h1>
+
+        foreach (var player in _players)
+        {
+            <button class="btn btn-primary m-1 @(_selectedPlayer == player.Name ? "border border-light" : "")" @onclick="() => SelectPlayer(player.Name)">
+                @player.Name
+            </button>
+        }
+
+        if (_selectedPlayer is not null)
+        {
+            <hr />
+
+            <div class="grid">
+                @if (_invalidPin)
+                {
+                    <p class="alert alert-danger">Invalid PIN</p>
+                }
+                <label>PIN:</label>
+                <input type="password" @bind="_pin" />
+                <button class="btn btn-success" @onclick=Join>Join Game</button>
+            </div>
+        }
+    }
+    else
+    {
+        <Play Player="_signedInPlayer" />
+    }
+}
+else
+{
+    <p>No players found.</p>
+}
+
+@code {
+    private TableClient _tableClient = null!;
+    private List<PlayerEntity> _players = null!;
+    private string? _selectedPlayer;
+    private int? _pin;
+    private bool _invalidPin;
+    private PlayerEntity? _signedInPlayer = null;
+
+    protected override void OnInitialized()
+    {
+        _tableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Players");
+        _players = _tableClient.Query<PlayerEntity>().ToList();
+    }
+
+    private void SelectPlayer(string name)
+    {
+        _selectedPlayer = name;
+        _invalidPin = false;
+    }
+
+    private void Join()
+    {
+        _invalidPin = false;
+
+        if (_selectedPlayer is null || _pin is null)
+        {
+            _invalidPin = true;
+            return;
+        };
+
+        var player = _players!.SingleOrDefault(p => p.Name == _selectedPlayer && p.Pin == _pin);
+
+        if (player is not null)
+        {
+            _signedInPlayer = player;
+        }
+
+        _invalidPin = true;
+    }
+}

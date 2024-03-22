@@ -1,0 +1,261 @@
+﻿@page "/run/{id}"
+@using Azure.Data.Tables
+@using Microsoft.AspNetCore.SignalR.Client
+@using System.Text.Json
+@rendermode InteractiveServer
+@inject IConfiguration Configuration
+@inject NavigationManager NavManager
+
+<PageTitle>Quiz | Run Game</PageTitle>
+
+@if (_players is null || _questions is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <h1>Run Game</h1>
+
+    <div class="current-question">
+        <div class="nav">
+            <button @onclick="PreviousQuestion" class="btn btn-primary">Previous Question</button>
+            <button @onclick="NextQuestion" class="btn btn-primary">Next Question</button>
+            <button @onclick="RevealAnswer" class="btn @(_currentQuestion.IsRevealed ? "btn-secondary" : "btn-warning")">Reveal Answer</button>
+        </div>
+        <div class="question-number">Question @_currentQuestion.Number/@_questions.Count()</div>
+        <div class="question">@(new MarkupString(_currentQuestion.Question))</div>
+        @foreach (var answer in _currentQuestion.Answers)
+        {
+            <div class="answer @(_currentQuestion.IsRevealed && answer.IsCorrect ? "revealed" : "")">
+                @(new MarkupString(answer.Answer))
+            </div>
+        }
+    </div>
+
+    <hr />
+
+    <h2>Players (@_players.Count(p => p.Answered.HasValue)/@_players.Count() Answered, @_players.Count(p => p.Answered.HasValue && p.Answered.Value)/@_players.Count() Correct)</h2>
+
+    <div class="players">
+        @foreach (var player in _players.OrderByDescending(p => p.Score))
+        {
+            <div class="player">
+                <div class="player-name @(player.Answered.HasValue && player.Answered.Value ? "text-success" : "")">
+                    @player.Name (@player.Score)
+                </div>
+                @if (!player.Answered.HasValue)
+                {
+                    <span class="player-answer text-warning">Waiting</span>
+                }
+                else
+                {
+                    if (player.Answered.Value)
+                    {
+                        <span class="player-answer text-success">Correct</span>
+                    }
+                    else
+                    {
+                        <span class="player-answer text-danger">Incorrect</span>
+                    }
+                }
+            </div>
+        }
+    </div>
+
+    <hr />
+
+    <h2>All Questions (@_questions.Count())</h2>
+
+    @foreach (var question in _questions)
+    {
+        <div class="all-questions-question @(question.Number == _currentQuestion.Number ? "all-questions-current" : "") @(question.IsRevealed ? "alert alert-warning" : "")">
+            <div class="question">
+                @(new MarkupString(question.Question))
+            </div>
+            @foreach (var answer in question.Answers)
+            {
+                <div class="answer">
+                    @if (answer.IsCorrect)
+                    {
+                        <strong>@answer.Answer</strong>
+                    }
+                    else
+                    {
+                        @answer.Answer
+                    }
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public required string Id { get; set; }
+
+    private TableClient _playersTableClient = null!;
+    private TableClient _questionsTableClient = null!;
+    private TableClient _gamesTableClient = null!;
+    private TableClient _scoresTableClient = null!;
+
+    private List<PlayerModel>? _players = null;
+    private List<QuestionModel>? _questions = null;
+    private QuestionModel _currentQuestion = null!;
+
+    private HubConnection? _hub;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _playersTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Players");
+        _questionsTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Questions");
+        _gamesTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Games");
+        _scoresTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Scores");
+
+        var questionEntities = _questionsTableClient.Query<QuestionEntity>().OrderBy(q => Convert.ToInt32(q.Number)).ToList();
+
+        _questions = questionEntities.Select(q => new QuestionModel
+            {
+                Number = Convert.ToInt32(q.Number),
+                Question = q.Question,
+                Answers = JsonSerializer.Deserialize<IEnumerable<QuestionModel.AnswerModel>>(q.Answers)!.ToList(),
+            }).ToList();
+
+        var gameEntity = await _gamesTableClient.GetEntityAsync<GameEntity>("1", Id);
+
+        _currentQuestion = _questions.Single(q => q.Number == gameEntity.Value.CurrentQuestion);
+
+        var playerEntities = _playersTableClient.Query<PlayerEntity>().ToList();
+
+        _players = playerEntities.Select(p => new PlayerModel
+            {
+                Number = Convert.ToInt32(p.RowKey),
+                Name = p.Name
+            }).ToList();
+
+        var scoresEntities = _scoresTableClient.Query<ScoreEntity>($"PartitionKey eq '{Id}'").ToList();
+
+        foreach (var player in _players)
+        {
+            var scoreEntity = scoresEntities.SingleOrDefault(s => s.RowKey == player.Number.ToString());
+
+            if (scoreEntity is not null)
+                player.Score = scoreEntity.Score;
+        }
+
+        _hub = new HubConnectionBuilder()
+                .WithUrl(NavManager.ToAbsoluteUri($"/quizhub"))
+                .Build();
+
+        _hub.On<int, bool>("AnswerSubmitted", AnswerSubmitted);
+
+        await _hub.StartAsync();
+
+        await _hub.SendAsync("StartGame", Convert.ToInt32(Id));
+    }
+
+    private async Task PreviousQuestion()
+    {
+        var currentIndex = _questions!.IndexOf(_currentQuestion);
+
+        if (currentIndex == 0)
+            return;
+
+        var game = await _gamesTableClient.GetEntityAsync<GameEntity>("1", Id);
+        game.Value.CurrentQuestion--;
+        await _gamesTableClient.UpsertEntityAsync(game.Value);
+
+        _currentQuestion = _questions.Single(q => q.Number == game.Value.CurrentQuestion);
+
+        await _hub!.SendAsync("ChangeQuestion", _currentQuestion.Number);
+
+        foreach (var player in _players!)
+            player.Answered = null;
+    }
+
+    private async Task RevealAnswer()
+    {
+        if (!_currentQuestion.IsRevealed)
+        {
+            var game = await _gamesTableClient.GetEntityAsync<GameEntity>("1", Id);
+            game.Value.AnswerIsRevealed = true;
+            await _gamesTableClient.UpsertEntityAsync(game.Value);
+
+            foreach (var player in _players!.Where(p => p.Answered.HasValue && p.Answered.Value))
+            {
+                var scoresEntity = _scoresTableClient.GetEntityIfExists<ScoreEntity>(Id, player.Number.ToString());
+
+                if (scoresEntity.HasValue)
+                {
+                    scoresEntity.Value!.Score++;
+                    await _scoresTableClient.UpsertEntityAsync(scoresEntity.Value, TableUpdateMode.Replace);
+                    player.Score++;
+                }
+                else
+                {
+                    var newScore = new ScoreEntity
+                    {
+                        PartitionKey = Id,
+                        RowKey = player.Number.ToString(),
+                        Score = 1
+                    };
+
+                    await _scoresTableClient.AddEntityAsync(newScore);
+                    player.Score = 1;
+                }
+            }
+
+            await _hub!.SendAsync("RevealAnswer");
+
+            _currentQuestion.IsRevealed = true;
+        }
+    }
+
+    private async Task NextQuestion()
+    {
+        var currentIndex = _questions!.IndexOf(_currentQuestion);
+
+        var game = await _gamesTableClient.GetEntityAsync<GameEntity>("1", Id);
+
+        if (currentIndex == _questions.Count - 1)
+        {
+            game.Value.Status = 2;
+            await _gamesTableClient.UpsertEntityAsync(game.Value);
+            NavManager.NavigateTo($"/results/{Id}");
+            return;
+        }
+
+        game.Value.CurrentQuestion++;
+        await _gamesTableClient.UpsertEntityAsync(game.Value);
+
+        _currentQuestion = _questions.Single(q => q.Number == game.Value.CurrentQuestion);
+
+        await _hub!.SendAsync("ChangeQuestion", _currentQuestion.Number);
+
+        foreach (var player in _players!)
+            player.Answered = null;
+    }
+
+    private async Task AnswerSubmitted(int playerId, bool isCorrect)
+    {
+        _players!.Single(p => p.Number == playerId).Answered = isCorrect;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private record QuestionModel
+    {
+        public required int Number { get; init; }
+        public required string Question { get; init; }
+        public required List<AnswerModel> Answers { get; init; }
+        public bool IsRevealed { get; set; }
+
+        public record AnswerModel(string Answer, bool IsCorrect);
+    }
+
+    private record PlayerModel
+    {
+        public required int Number { get; set; }
+        public required string Name { get; set; }
+        public bool? Answered { get; set; }
+        public int Score { get; set; }
+    }
+}

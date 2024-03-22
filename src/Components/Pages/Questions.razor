@@ -1,0 +1,160 @@
+﻿@page "/questions"
+@using Azure.Data.Tables
+@using Microsoft.Extensions.Configuration
+@using System.Text.Json
+@rendermode InteractiveServer
+@inject IConfiguration Configuration
+
+@if (!string.IsNullOrEmpty(_validationMessage))
+{
+    <div class="alert alert-danger">@_validationMessage</div>
+}
+
+<div class="section-title">
+    <h2>Questions</h2>
+    <button class="btn btn-primary" @onclick="AddQuestion">Add Question</button>
+</div>
+
+@if (_questions.Any())
+{
+    <div class="grid">
+        @foreach (var question in _questions)
+        {
+            <div class="number">
+                <label>Question</label>
+                <InputNumber step="1" @bind-Value="question.Number" />
+            </div>
+            <InputTextArea class="form-control" @bind-Value=question.Question />
+            <label>Answers</label>
+            <div class="answers">
+                @foreach (var answer in question.Answers)
+                {
+                    <InputCheckbox class="form-check-input" @bind-Value="answer.IsCorrect" />
+                    <InputText class="form-control" @bind-Value=answer.Answer />
+                }
+            </div>
+            <div class="question-actions">
+                <button class="btn btn-info" @onclick="() => UpdateQuestion(question)">Update</button>
+                <button class="btn btn-danger ml-sm-4" @onclick="() => DeleteQuestion(question.Id)">Delete</button>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <p>No questions found.</p>
+}
+
+@code {
+    private TableClient _questionsTableClient = null!;
+    private readonly List<QuestionModel> _questions = [];
+    private string _validationMessage = "";
+
+    protected override void OnInitialized()
+    {
+        _questionsTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Questions");
+
+        var questionEntities = _questionsTableClient
+                                .Query<Entities.QuestionEntity>()
+                                .OrderBy(q => q.Number)
+                                .ToList();
+
+        foreach (var entity in questionEntities)
+            _questions.Add(new QuestionModel
+            {
+                Id = entity.RowKey,
+                Number = Convert.ToInt32(entity.Number),
+                Question = entity.Question.Replace("<br />", "\n"),
+                Answers = JsonSerializer.Deserialize<IEnumerable<QuestionModel.AnswerModel>>(entity.Answers)!.ToList(),
+            });
+    }
+
+    private async Task AddQuestion()
+    {
+        _validationMessage = "";
+
+        if (_questions.Any(q => q.Question == string.Empty))
+        {
+            _validationMessage = "You can't add new questions while there's a new blank one.";
+            return;
+        }
+
+        var questionId = _questions.Any() ? (_questions.Max(q => q.Id) + 1).ToString() : "1";
+        var questionNumber = _questions.Any() ? _questions.Max(q => Convert.ToInt32(q.Number)) + 1 : 1;
+
+        var entity = new QuestionEntity(questionId)
+            {
+                Number = questionNumber,
+                Question = "",
+                Answers = JsonSerializer.Serialize(new List<QuestionModel.AnswerModel>
+                {
+                    new("A. ", true),
+                    new("B. ", false),
+                    new("C. ", false),
+                    new("D. ", false)
+                })
+            };
+
+        await _questionsTableClient.AddEntityAsync(entity);
+
+        _questions.Add(new QuestionModel { Id = questionId, Number = questionNumber });
+    }
+
+    private async Task UpdateQuestion(QuestionModel question)
+    {
+        _validationMessage = "";
+
+        if (question.Answers.Count(a => a.IsCorrect) != 1)
+        {
+            _validationMessage = "Exactly one answer needs to be correct.";
+            return;
+        }
+
+        if (string.IsNullOrEmpty(question.Question))
+        {
+            _validationMessage = "The question is blank!";
+            return;
+        }
+
+        var entity = _questionsTableClient.GetEntity<QuestionEntity>("1", question.Id);
+
+        entity.Value.Number = question.Number;
+        entity.Value.Question = question.Question.Replace("\n", "<br />");
+        entity.Value.Answers = JsonSerializer.Serialize(question.Answers);
+
+        await _questionsTableClient.UpsertEntityAsync(entity.Value, TableUpdateMode.Replace);
+    }
+
+    private async Task DeleteQuestion(string id)
+    {
+        await _questionsTableClient.DeleteEntityAsync("1", id);
+        _questions.Remove(_questions.Single(p => p.Id == id));
+    }
+
+    public record QuestionModel
+    {
+        public required string Id { get; set; }
+        public int Number { get; set; }
+        public string Question { get; set; } = "";
+        public List<AnswerModel> Answers { get; set; } = [
+            new AnswerModel("A. ", true),
+            new AnswerModel("B. ", false),
+            new AnswerModel("C. ", false),
+            new AnswerModel("D. ", false)
+        ];
+
+        public record AnswerModel
+        {
+            public string Answer { get; set; }
+            public bool IsCorrect { get; set; }
+
+            public AnswerModel() { }
+
+            public AnswerModel(string answer, bool isCorrect)
+            {
+                Answer = answer;
+                IsCorrect = isCorrect;
+            }
+        }
+    }
+}

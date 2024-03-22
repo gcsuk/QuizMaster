@@ -1,0 +1,148 @@
+﻿@using Azure.Data.Tables
+@using Microsoft.AspNetCore.SignalR
+@using Microsoft.AspNetCore.SignalR.Client
+@using System.Text.Json
+@rendermode InteractiveServer
+@inject IConfiguration Configuration
+@inject NavigationManager NavManager
+
+<PageTitle>Quiz | Play</PageTitle>
+
+@if (_questions is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    if (_gameId == 0 || _currentQuestion is null)
+    {
+        <h1>Waiting for the game to start...</h1>
+    }
+    else
+    {
+        <div class="grid">
+            <h1>@(new MarkupString(_currentQuestion.Question))</h1>
+            @foreach (var answer in _currentQuestion.Answers)
+            {
+                <button class="btn @GetRevealedAnswerStatus(answer)" @onclick="() => SelectAnswer(answer)">@answer.Answer</button><br />
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public required PlayerEntity Player { get; set; } = null!;
+
+    private List<QuestionModel>? _questions = null;
+    private QuestionModel? _currentQuestion = null;
+    private QuestionModel.AnswerModel? _selectedAnswer = null;
+    private TableClient _gamesTableClient = null!;
+    private TableClient _questionsTableClient = null!;
+    private int _gameId;
+    private HubConnection? _hub;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _gamesTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Games");
+        _questionsTableClient = new TableClient(Configuration.GetConnectionString("TableStorage"), "Questions");
+
+        var questionEntities = _questionsTableClient.Query<QuestionEntity>().ToList();
+
+        _questions = questionEntities.Select(q => new QuestionModel
+            {
+                Number = Convert.ToInt32(q.Number),
+                Question = q.Question,
+                Answers = JsonSerializer.Deserialize<IEnumerable<QuestionModel.AnswerModel>>(q.Answers)!.ToList(),
+            }).ToList();
+
+        _hub = new HubConnectionBuilder()
+                .WithUrl(NavManager.ToAbsoluteUri($"/quizhub"))
+                .Build();
+
+        _hub.On<int>("ChangeQuestion", ChangeQuestion);
+        _hub.On("RevealAnswer", RevealAnswer);
+        _hub.On<int>("StartGame", StartGame);
+
+        await _hub.StartAsync();
+
+        var gameEntity = _gamesTableClient.Query<GameEntity>("Status eq 1").FirstOrDefault();
+
+        if (gameEntity is not null)
+        {
+            _gameId = Convert.ToInt32(gameEntity.RowKey);
+            _currentQuestion = _questions[_questions.FindIndex(q => q.Number == gameEntity.CurrentQuestion)];
+        }
+    }
+
+    private async Task StartGame(int id)
+    {
+        _gameId = id;
+        _currentQuestion = _questions!.First();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ChangeQuestion(int questionNumber)
+    {
+        _currentQuestion = _questions!.Single(q => q.Number == questionNumber);
+        _selectedAnswer = null;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RevealAnswer()
+    {
+        _currentQuestion!.IsRevealed = true;
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private string GetRevealedAnswerStatus(QuestionModel.AnswerModel answer)
+    {
+        if (_currentQuestion!.IsRevealed)
+        {
+            return answer.IsCorrect ? "btn-success" : "btn-danger";
+        }
+     
+        return _selectedAnswer == answer ? "btn-warning" : "btn-primary";
+    }
+
+    private async Task SelectAnswer(QuestionModel.AnswerModel answer)
+    {
+        if (_currentQuestion!.IsRevealed)
+            return;
+
+        _selectedAnswer = answer;
+        await _hub!.SendAsync("AnswerSubmitted", Convert.ToInt32(Player.RowKey), answer.IsCorrect);
+    }
+
+    private record QuestionModel
+    {
+        public required int Number { get; init; }
+        public required string Question { get; init; }
+        public required List<AnswerModel> Answers { get; init; }
+        public bool IsCurrent { get; set; }
+        public bool IsRevealed { get; set; }
+
+        public record AnswerModel
+        {
+            public string Answer { get; set; }
+            public bool IsCorrect { get; set; }
+
+            public AnswerModel() { }
+
+            public AnswerModel(string answer, bool isCorrect)
+            {
+                Answer = answer;
+                IsCorrect = isCorrect;
+            }
+        }
+    }
+
+    public class ScoreModel
+    {
+        public required int Id { get; init; }
+        public required string GameId { get; init; }
+        public required int PlayerId { get; init; }
+        public int Score { get; set; }
+    }
+}

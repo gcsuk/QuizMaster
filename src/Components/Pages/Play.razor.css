@@ -1,0 +1,15 @@
+﻿.grid {
+    margin: 0 auto;
+    max-width: 800px;
+}
+
+h1 {
+    text-align: center;
+}
+
+button {
+    width: 100%;
+    margin-top: 40px;
+    padding: 20px;
+    font-size: 1.4rem;
+}
