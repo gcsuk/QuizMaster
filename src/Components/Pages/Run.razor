@@ -220,6 +220,7 @@ else
         {
             game.Value.Status = 2;
             await _gamesTableClient.UpsertEntityAsync(game.Value);
+            await _hub!.SendAsync("ShowResults");
             NavManager.NavigateTo($"/results/{Id}");
             return;
         }

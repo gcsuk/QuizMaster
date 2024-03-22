@@ -63,6 +63,7 @@ else
         _hub.On<int>("ChangeQuestion", ChangeQuestion);
         _hub.On("RevealAnswer", RevealAnswer);
         _hub.On<int>("StartGame", StartGame);
+        _hub.On("ShowResults", ShowResults);
 
         await _hub.StartAsync();
 
@@ -113,6 +114,11 @@ else
 
         _selectedAnswer = answer;
         await _hub!.SendAsync("AnswerSubmitted", Convert.ToInt32(Player.RowKey), answer.IsCorrect);
+    }
+
+    private void ShowResults()
+    {
+        NavManager.NavigateTo($"/results/{_gameId}");
     }
 
     private record QuestionModel

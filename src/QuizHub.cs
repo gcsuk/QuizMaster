@@ -23,4 +23,9 @@ public class QuizHub : Hub
     {
         await Clients.All.SendAsync("AnswerSubmitted", playerId, isCorrect);
     }
+
+    public async Task ShowResults()
+    {
+        await Clients.All.SendAsync("ShowResults");
+    }
 }
